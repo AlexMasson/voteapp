@@ -316,6 +316,13 @@ h3 {
   padding: 8px 12px;
 }
 
+/* Style des options du select */
+.select option {
+  background: #1a1a2e;
+  color: #fff;
+  padding: 8px;
+}
+
 /* Résultat */
 .resultat {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
