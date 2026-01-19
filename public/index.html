@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vote App</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Écran d'accueil -->
+    <div id="screen-home" class="screen active">
+      <h1>Vote App</h1>
+      <p class="subtitle">Vote collaboratif en temps réel</p>
+      <div class="buttons">
+        <button id="btn-start" class="btn btn-primary">Démarrer une partie</button>
+        <button id="btn-join" class="btn btn-secondary" disabled>Entrer dans une partie</button>
+      </div>
+    </div>
+
+    <!-- Écran Récepteur -->
+    <div id="screen-recepteur" class="screen">
+      <h1>Récepteur</h1>
+
+      <div class="info-card">
+        <div class="info-row">
+          <span class="label">Participants :</span>
+          <span id="nb-emetteurs" class="value">0</span>
+        </div>
+        <div class="info-row">
+          <span class="label">État :</span>
+          <span id="etat-partie" class="value badge">OUVERTE</span>
+        </div>
+        <div class="info-row">
+          <span class="label">Votes reçus :</span>
+          <span id="nb-votes" class="value">0</span>
+        </div>
+      </div>
+
+      <div id="resultat-recepteur" class="resultat hidden">
+        <span class="label">Moyenne :</span>
+        <span id="moyenne-recepteur" class="moyenne">-</span>
+      </div>
+
+      <div class="buttons">
+        <button id="btn-close-doors" class="btn btn-warning">Fermeture des portes</button>
+        <button id="btn-open-vote" class="btn btn-primary" disabled>Ouverture du vote</button>
+        <button id="btn-close-vote" class="btn btn-success hidden">Fin du vote</button>
+        <button id="btn-end-party" class="btn btn-danger">Terminer la partie</button>
+      </div>
+    </div>
+
+    <!-- Écran Émetteur -->
+    <div id="screen-emetteur" class="screen">
+      <h1>Émetteur</h1>
+
+      <div id="emetteur-waiting" class="waiting">
+        <p>En attente du lancement du vote...</p>
+        <div class="loader"></div>
+      </div>
+
+      <div id="emetteur-vote" class="vote-section hidden">
+        <p>Choisissez votre vote :</p>
+        <div class="vote-buttons">
+          <button class="vote-btn" data-value="0">0</button>
+          <button class="vote-btn" data-value="1">1</button>
+          <button class="vote-btn" data-value="2">2</button>
+          <button class="vote-btn" data-value="3">3</button>
+          <button class="vote-btn" data-value="4">4</button>
+          <button class="vote-btn" data-value="5">5</button>
+          <button class="vote-btn" data-value="6">6</button>
+        </div>
+        <p id="vote-status" class="vote-status"></p>
+      </div>
+
+      <div id="emetteur-resultat" class="resultat hidden">
+        <p>Vote terminé</p>
+        <span class="label">Moyenne :</span>
+        <span id="moyenne-emetteur" class="moyenne">-</span>
+      </div>
+    </div>
+
+    <!-- Écran Partie terminée -->
+    <div id="screen-ended" class="screen">
+      <h1>Partie terminée</h1>
+      <p>La partie a été terminée par le récepteur.</p>
+      <button id="btn-back-home" class="btn btn-primary">Retour à l'accueil</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
