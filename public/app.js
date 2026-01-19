@@ -1,5 +1,10 @@
 const socket = io();
 
+// Keep-alive : ping le serveur toutes les 5 minutes pour éviter que Render s'endorme
+setInterval(() => {
+  fetch('/ping').catch(() => {});
+}, 5 * 60 * 1000);
+
 // Éléments DOM
 const screens = {
   home: document.getElementById('screen-home'),
