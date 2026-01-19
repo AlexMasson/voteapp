@@ -14,32 +14,73 @@
       <p class="subtitle">Vote collaboratif en temps réel</p>
       <div class="buttons">
         <button id="btn-start" class="btn btn-primary">Démarrer une partie</button>
-        <button id="btn-join" class="btn btn-secondary" disabled>Entrer dans une partie</button>
+
+        <div class="divider"><span>ou rejoindre</span></div>
+
+        <div class="join-form">
+          <input type="text" id="input-code" class="input" placeholder="Code à 4 chiffres" maxlength="4" pattern="[0-9]*" inputmode="numeric">
+          <input type="text" id="input-nom" class="input" placeholder="Votre prénom" maxlength="20">
+          <button id="btn-join" class="btn btn-secondary">Rejoindre</button>
+        </div>
       </div>
     </div>
 
     <!-- Écran Récepteur -->
     <div id="screen-recepteur" class="screen">
-      <h1>Récepteur</h1>
+      <div class="header-bar">
+        <h1>Récepteur</h1>
+        <div class="code-display">
+          Code : <span id="party-code" class="code">----</span>
+        </div>
+      </div>
 
       <div class="info-card">
-        <div class="info-row">
-          <span class="label">Participants :</span>
-          <span id="nb-emetteurs" class="value">0</span>
-        </div>
         <div class="info-row">
           <span class="label">État :</span>
           <span id="etat-partie" class="value badge">OUVERTE</span>
         </div>
         <div class="info-row">
-          <span class="label">Votes reçus :</span>
-          <span id="nb-votes" class="value">0</span>
+          <span class="label">Participants :</span>
+          <span id="nb-emetteurs" class="value">0</span>
         </div>
       </div>
 
+      <!-- Liste des participants -->
+      <div id="participants-section" class="participants-section">
+        <h3>Participants</h3>
+        <div id="participants-list" class="participants-list"></div>
+      </div>
+
+      <!-- Timer -->
+      <div id="timer-display" class="timer-display hidden">
+        <span id="timer-value" class="timer-value">30</span>
+        <span class="timer-label">secondes</span>
+      </div>
+
+      <!-- Résultat -->
       <div id="resultat-recepteur" class="resultat hidden">
-        <span class="label">Moyenne :</span>
+        <span class="label">Moyenne</span>
         <span id="moyenne-recepteur" class="moyenne">-</span>
+      </div>
+
+      <!-- Historique -->
+      <div id="historique-section" class="historique-section hidden">
+        <h3>Historique des votes</h3>
+        <div id="historique-list" class="historique-list"></div>
+      </div>
+
+      <!-- Timer setting -->
+      <div id="timer-setting" class="timer-setting">
+        <label>
+          <input type="checkbox" id="use-timer"> Chronomètre
+        </label>
+        <select id="timer-duration" class="select" disabled>
+          <option value="15">15 sec</option>
+          <option value="30" selected>30 sec</option>
+          <option value="45">45 sec</option>
+          <option value="60">60 sec</option>
+          <option value="90">90 sec</option>
+        </select>
       </div>
 
       <div class="buttons">
@@ -52,7 +93,18 @@
 
     <!-- Écran Émetteur -->
     <div id="screen-emetteur" class="screen">
-      <h1>Émetteur</h1>
+      <div class="header-bar">
+        <h1>Émetteur</h1>
+        <div class="code-display">
+          Code : <span id="emetteur-code" class="code">----</span>
+        </div>
+      </div>
+
+      <!-- Timer émetteur -->
+      <div id="timer-emetteur" class="timer-display hidden">
+        <span id="timer-emetteur-value" class="timer-value">30</span>
+        <span class="timer-label">secondes</span>
+      </div>
 
       <div id="emetteur-waiting" class="waiting">
         <p>En attente du lancement du vote...</p>
@@ -75,8 +127,14 @@
 
       <div id="emetteur-resultat" class="resultat hidden">
         <p>Vote terminé</p>
-        <span class="label">Moyenne :</span>
+        <span class="label">Moyenne</span>
         <span id="moyenne-emetteur" class="moyenne">-</span>
+      </div>
+
+      <!-- Historique émetteur -->
+      <div id="historique-emetteur-section" class="historique-section hidden">
+        <h3>Historique</h3>
+        <div id="historique-emetteur-list" class="historique-list"></div>
       </div>
     </div>
 
