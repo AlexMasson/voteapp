@@ -1,0 +1,55 @@
+# Configuration Artillery pour tests de charge
+# Usage :
+#   npx artillery run tests/load-test.yml                          (local)
+#   TARGET_URL=https://your-app.onrender.com npx artillery run tests/load-test.yml  (Render)
+
+config:
+  target: "{{ $processEnvironment.TARGET_URL }}"
+  phases:
+    # Phase 1 : montée progressive
+    - duration: 10
+      arrivalRate: 2
+      name: "Montée progressive"
+    # Phase 2 : charge soutenue (20 utilisateurs simultanés)
+    - duration: 30
+      arrivalRate: 5
+      name: "Charge soutenue"
+  engines:
+    socketio-v3:
+      transports: ["websocket"]
+  defaults:
+    headers:
+      Content-Type: "application/json"
+
+scenarios:
+  # Scénario 1 : Émetteur qui rejoint, vote, et reste
+  - name: "Émetteur - rejoindre et voter"
+    engine: socketio-v3
+    flow:
+      # Rejoindre la partie (le code doit être passé via env PARTY_CODE)
+      - emit:
+          channel: "join-party"
+          data:
+            code: "{{ $processEnvironment.PARTY_CODE }}"
+            nom: "Artillery-{{ $uuid }}"
+            odId: "artillery-{{ $uuid }}"
+      # Attendre le rôle
+      - listen:
+          channel: "role"
+          timeout: 5
+      # Attendre le party-state
+      - listen:
+          channel: "party-state"
+          timeout: 5
+      # Pause avant de voter
+      - think: 2
+      # Voter
+      - emit:
+          channel: "vote"
+          data: 4
+      # Attendre la confirmation
+      - listen:
+          channel: "vote-confirmed"
+          timeout: 5
+      # Rester connecté un moment
+      - think: 10

@@ -256,6 +256,35 @@ h3 {
   background: #38ef7d;
 }
 
+.participant.disconnected {
+  opacity: 0.5;
+  border: 1px dashed #f5576c;
+}
+
+.participant.disconnected .status {
+  background: #f5576c;
+}
+
+/* Reconnection banner */
+.reconnection-toast {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  color: #fff;
+  text-align: center;
+  padding: 10px;
+  font-weight: 600;
+  z-index: 1001;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(0); }
+}
+
 /* Timer */
 .timer-display {
   text-align: center;
@@ -424,6 +453,31 @@ h3 {
   background: rgba(56, 239, 125, 0.2);
   transform: scale(1.1);
   box-shadow: 0 0 20px rgba(56, 239, 125, 0.3);
+}
+
+.vote-btn.confirmed {
+  border-color: #38ef7d;
+  background: rgba(56, 239, 125, 0.35);
+  transform: scale(1.1);
+  box-shadow: 0 0 25px rgba(56, 239, 125, 0.5);
+  position: relative;
+}
+
+.vote-btn.confirmed::after {
+  content: '✓';
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  background: #38ef7d;
+  color: #1a1a2e;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .vote-btn:last-child {

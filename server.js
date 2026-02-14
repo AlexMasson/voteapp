@@ -4,10 +4,16 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const { Redis } = require('@upstash/redis');
+const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  pingInterval: 10000,
+  pingTimeout: 15000,
+  transports: ['websocket', 'polling'],
+  maxHttpBufferSize: 1e6,
+});
 
 // Connexion Redis Upstash
 const redis = new Redis({
@@ -25,7 +31,7 @@ app.get('/ping', (req, res) => {
 
 // Préfixe pour les clés Redis
 const PARTY_PREFIX = 'party:';
-const USER_PREFIX = 'user:';
+const OD_PREFIX = 'od:'; // odId → code de partie
 
 // TTL des parties (2 heures)
 const PARTY_TTL = 7200;
@@ -33,18 +39,41 @@ const PARTY_TTL = 7200;
 // Structure d'une partie (stockée en JSON dans Redis) :
 // {
 //   code: string,
-//   recepteurId: string,
+//   recepteurOdId: string,           // odId persistant du créateur
 //   etat: 'OUVERTE' | 'FERMEE' | 'VOTE_OUVERT' | 'VOTE_FERME',
-//   emetteurs: { [socketId]: { id: string, nom: string } },
-//   votes: { [socketId]: number },
+//   emetteurs: { [odId]: { id: string, nom: string, connecte: boolean } },
+//   votes: { [odId]: number },
 //   moyenne: number | null,
 //   historique: Array<{ numero: number, moyenne: number, nbVotants: number, votes: Object }>,
-//   timer: number | null,
 //   timerEndTime: number | null (timestamp)
 // }
 
-// Cache local pour les timers (ne peut pas être dans Redis)
+// --- Maps en mémoire ---
+// odId → socketId courant (pour retrouver le socket lors du broadcast)
+const odToSocket = new Map();
+// socketId → odId (pour retrouver l'identité lors de la déconnexion)
+const socketToOd = new Map();
+// Mutex par partie (sérialiser les écritures concurrentes)
+const partyLocks = new Map();
+// Cache local pour les timers
 const timerIntervals = new Map();
+
+// --- Mutex simple par code de partie ---
+async function withPartyLock(code, fn) {
+  if (!partyLocks.has(code)) {
+    partyLocks.set(code, Promise.resolve());
+  }
+  const prev = partyLocks.get(code);
+  let resolve;
+  const next = new Promise(r => { resolve = r; });
+  partyLocks.set(code, next);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    resolve();
+  }
+}
 
 // Génère un code à 4 chiffres unique
 async function generateCode() {
@@ -73,33 +102,35 @@ async function saveParty(party) {
 async function deleteParty(code) {
   stopTimer(code);
   await redis.del(PARTY_PREFIX + code);
+  partyLocks.delete(code);
 }
 
-// Récupérer le code de partie d'un utilisateur
-async function getUserParty(socketId) {
-  return await redis.get(USER_PREFIX + socketId);
+// Récupérer le code de partie d'un utilisateur (par odId)
+async function getUserParty(odId) {
+  return await redis.get(OD_PREFIX + odId);
 }
 
-// Associer un utilisateur à une partie
-async function setUserParty(socketId, code) {
-  await redis.set(USER_PREFIX + socketId, code, { ex: PARTY_TTL });
+// Associer un utilisateur à une partie (par odId)
+async function setUserParty(odId, code) {
+  await redis.set(OD_PREFIX + odId, code, { ex: PARTY_TTL });
 }
 
 // Supprimer l'association utilisateur -> partie
-async function deleteUserParty(socketId) {
-  await redis.del(USER_PREFIX + socketId);
+async function deleteUserParty(odId) {
+  await redis.del(OD_PREFIX + odId);
 }
 
 function getPartyState(party) {
   if (!party) return null;
 
-  // Liste des émetteurs avec leur statut de vote
+  // Liste des émetteurs avec leur statut de vote et connexion
   const emetteursList = [];
-  for (const [id, data] of Object.entries(party.emetteurs || {})) {
+  for (const [odId, data] of Object.entries(party.emetteurs || {})) {
     emetteursList.push({
-      id: id,
+      id: odId,
       nom: data.nom,
-      aVote: party.votes && party.votes[id] !== undefined
+      aVote: party.votes && party.votes[odId] !== undefined,
+      connecte: data.connecte !== false,
     });
   }
 
@@ -118,18 +149,16 @@ function getPartyState(party) {
     emetteurs: emetteursList,
     nbVotes: Object.keys(party.votes || {}).length,
     historique: party.historique || [],
-    timer: timer
+    timer: timer,
+    timerEndTime: party.timerEndTime || null,
+    tourNumero: (party.historique || []).length,
   };
 }
 
 async function broadcastToParty(party) {
   const state = getPartyState(party);
-  // Envoyer au récepteur
-  io.to(party.recepteurId).emit('party-state', state);
-  // Envoyer à tous les émetteurs
-  for (const socketId of Object.keys(party.emetteurs || {})) {
-    io.to(socketId).emit('party-state', state);
-  }
+  // Utiliser la room Socket.IO pour un broadcast performant
+  io.to('party:' + party.code).emit('party-state', state);
 }
 
 function stopTimer(code) {
@@ -143,21 +172,28 @@ function startTimer(party, seconds) {
   stopTimer(party.code);
   party.timerEndTime = Date.now() + seconds * 1000;
 
+  // Le timer côté serveur vérifie uniquement l'expiration.
+  // Le décompte visuel est géré côté client via timerEndTime.
   const interval = setInterval(async () => {
-    const currentParty = await getParty(party.code);
-    if (!currentParty) {
-      stopTimer(party.code);
-      return;
-    }
+    try {
+      await withPartyLock(party.code, async () => {
+        const currentParty = await getParty(party.code);
+        if (!currentParty) {
+          stopTimer(party.code);
+          return;
+        }
 
-    const remaining = Math.round((currentParty.timerEndTime - Date.now()) / 1000);
+        const remaining = Math.round((currentParty.timerEndTime - Date.now()) / 1000);
 
-    if (remaining <= 0) {
+        if (remaining <= 0) {
+          stopTimer(party.code);
+          await closeVote(currentParty);
+        }
+        // Plus de broadcast chaque seconde — le client fait le décompte
+      });
+    } catch (err) {
+      console.error('Erreur timer:', err);
       stopTimer(party.code);
-      await closeVote(currentParty);
-    } else {
-      // Broadcast pour mettre à jour le timer côté client
-      await broadcastToParty(currentParty);
     }
   }, 1000);
 
@@ -177,8 +213,8 @@ async function closeVote(party) {
 
     // Ajouter à l'historique
     const votesDetail = {};
-    for (const [socketId, valeur] of Object.entries(party.votes || {})) {
-      const emetteur = party.emetteurs[socketId];
+    for (const [odId, valeur] of Object.entries(party.votes || {})) {
+      const emetteur = party.emetteurs[odId];
       if (emetteur) {
         votesDetail[emetteur.nom] = valeur;
       }
@@ -200,27 +236,50 @@ async function closeVote(party) {
   console.log('Vote fermé, moyenne:', party.moyenne);
 }
 
+// Helper : faire rejoindre un socket dans une room et mettre à jour les maps
+function registerSocket(socket, odId, code) {
+  odToSocket.set(odId, socket.id);
+  socketToOd.set(socket.id, odId);
+  socket.join('party:' + code);
+}
+
+// Helper : retirer un socket des maps
+function unregisterSocket(socket) {
+  const odId = socketToOd.get(socket.id);
+  if (odId) {
+    // Ne retirer odToSocket que si c'est bien ce socket qui est actif
+    if (odToSocket.get(odId) === socket.id) {
+      odToSocket.delete(odId);
+    }
+    socketToOd.delete(socket.id);
+  }
+  return odId;
+}
+
 io.on('connection', (socket) => {
   console.log('Utilisateur connecté:', socket.id);
 
-  // Envoyer l'état initial
-  socket.emit('party-state', null);
-  socket.emit('role', null);
-
   // Démarrer une partie (devenir Récepteur)
-  socket.on('start-party', async () => {
+  socket.on('start-party', async (clientOdId) => {
     try {
+      const odId = clientOdId || crypto.randomUUID();
+
       // Vérifier que l'utilisateur n'est pas déjà dans une partie
-      const existingCode = await getUserParty(socket.id);
+      const existingCode = await getUserParty(odId);
       if (existingCode) {
-        socket.emit('error', 'Vous êtes déjà dans une partie');
-        return;
+        const existingParty = await getParty(existingCode);
+        if (existingParty) {
+          socket.emit('error', 'Vous êtes déjà dans une partie');
+          return;
+        }
+        // La partie n'existe plus, nettoyer
+        await deleteUserParty(odId);
       }
 
       const code = await generateCode();
       const party = {
         code: code,
-        recepteurId: socket.id,
+        recepteurOdId: odId,
         etat: 'OUVERTE',
         emetteurs: {},
         votes: {},
@@ -230,12 +289,14 @@ io.on('connection', (socket) => {
       };
 
       await saveParty(party);
-      await setUserParty(socket.id, code);
+      await setUserParty(odId, code);
+      registerSocket(socket, odId, code);
 
       socket.emit('role', 'recepteur');
       socket.emit('party-code', code);
+      socket.emit('assigned-od-id', odId);
       await broadcastToParty(party);
-      console.log('Partie créée:', code, 'par:', socket.id);
+      console.log('Partie créée:', code, 'par odId:', odId);
     } catch (err) {
       console.error('Erreur start-party:', err);
       socket.emit('error', 'Erreur serveur');
@@ -243,64 +304,153 @@ io.on('connection', (socket) => {
   });
 
   // Rejoindre une partie avec un code (devenir Émetteur)
-  socket.on('join-party', async ({ code, nom }) => {
+  // Accepte les rejoins à tout moment (pas seulement état OUVERTE)
+  socket.on('join-party', async ({ code, nom, odId: clientOdId }) => {
     try {
-      // Vérifier que l'utilisateur n'est pas déjà dans une partie
-      const existingCode = await getUserParty(socket.id);
-      if (existingCode) {
-        socket.emit('error', 'Vous êtes déjà dans une partie');
-        return;
+      const odId = clientOdId || crypto.randomUUID();
+
+      // Vérifier si l'utilisateur est déjà dans une autre partie
+      const existingCode = await getUserParty(odId);
+      if (existingCode && existingCode !== code) {
+        const otherParty = await getParty(existingCode);
+        if (otherParty) {
+          socket.emit('error', 'Vous êtes déjà dans une autre partie');
+          return;
+        }
+        await deleteUserParty(odId);
       }
 
-      const party = await getParty(code);
-      if (!party) {
-        socket.emit('error', 'Code invalide');
-        return;
-      }
+      // Protéger la lecture-modification-écriture par le mutex
+      await withPartyLock(code, async () => {
+        const party = await getParty(code);
+        if (!party) {
+          socket.emit('error', 'Code invalide');
+          return;
+        }
 
-      if (party.etat !== 'OUVERTE') {
-        socket.emit('error', 'Les portes sont fermées');
-        return;
-      }
+        // Vérifier si c'est une reconnexion d'un émetteur existant
+        if (party.emetteurs && party.emetteurs[odId]) {
+          party.emetteurs[odId].connecte = true;
+          await saveParty(party);
+          await setUserParty(odId, code);
+          registerSocket(socket, odId, code);
 
-      if (Object.keys(party.emetteurs || {}).length >= 25) {
-        socket.emit('error', 'Nombre maximum de participants atteint');
-        return;
-      }
+          socket.emit('role', 'emetteur');
+          socket.emit('assigned-od-id', odId);
 
-      // Nettoyer le nom
-      const nomClean = (nom || 'Anonyme').trim().substring(0, 20) || 'Anonyme';
+          // Restaurer le vote si existant
+          if (party.votes && party.votes[odId] !== undefined) {
+            socket.emit('vote-confirmed', party.votes[odId]);
+          }
 
-      party.emetteurs = party.emetteurs || {};
-      party.emetteurs[socket.id] = { id: socket.id, nom: nomClean };
+          await broadcastToParty(party);
+          console.log('Émetteur reconnecté:', odId, 'partie:', code);
+          return;
+        }
 
-      await saveParty(party);
-      await setUserParty(socket.id, code);
+        // Nouveau participant — vérifier les limites
+        if (Object.keys(party.emetteurs || {}).length >= 25) {
+          socket.emit('error', 'Nombre maximum de participants atteint');
+          return;
+        }
 
-      socket.emit('role', 'emetteur');
-      await broadcastToParty(party);
-      console.log('Émetteur rejoint:', socket.id, 'nom:', nomClean, 'partie:', code);
+        // Nettoyer le nom
+        const nomClean = (nom || 'Anonyme').trim().substring(0, 20) || 'Anonyme';
+
+        party.emetteurs = party.emetteurs || {};
+        party.emetteurs[odId] = { id: odId, nom: nomClean, connecte: true };
+
+        await saveParty(party);
+        await setUserParty(odId, code);
+        registerSocket(socket, odId, code);
+
+        socket.emit('role', 'emetteur');
+        socket.emit('assigned-od-id', odId);
+        await broadcastToParty(party);
+        console.log('Émetteur rejoint:', odId, 'nom:', nomClean, 'partie:', code);
+      });
     } catch (err) {
       console.error('Erreur join-party:', err);
       socket.emit('error', 'Erreur serveur');
     }
   });
 
-  // Fermer les portes (Récepteur uniquement)
-  socket.on('close-doors', async () => {
+  // Reconnexion automatique (client envoie son odId et le code)
+  socket.on('reconnect-party', async ({ odId, code }) => {
     try {
-      const code = await getUserParty(socket.id);
-      const party = await getParty(code);
-
-      if (!party || socket.id !== party.recepteurId) {
-        socket.emit('error', 'Action non autorisée');
+      if (!odId || !code) {
+        socket.emit('error', 'Informations de reconnexion manquantes');
         return;
       }
 
-      party.etat = 'FERMEE';
-      await saveParty(party);
-      await broadcastToParty(party);
-      console.log('Portes fermées, partie:', code);
+      // Protéger la lecture-modification-écriture par le mutex
+      await withPartyLock(code, async () => {
+        const party = await getParty(code);
+        if (!party) {
+          socket.emit('reconnect-failed');
+          return;
+        }
+
+        // Reconnexion du récepteur
+        if (party.recepteurOdId === odId) {
+          registerSocket(socket, odId, code);
+          await setUserParty(odId, code);
+          socket.emit('role', 'recepteur');
+          socket.emit('party-code', code);
+          socket.emit('assigned-od-id', odId);
+          await broadcastToParty(party);
+          console.log('Récepteur reconnecté:', odId, 'partie:', code);
+          return;
+        }
+
+        // Reconnexion d'un émetteur
+        if (party.emetteurs && party.emetteurs[odId]) {
+          party.emetteurs[odId].connecte = true;
+          await saveParty(party);
+          await setUserParty(odId, code);
+          registerSocket(socket, odId, code);
+
+          socket.emit('role', 'emetteur');
+          socket.emit('assigned-od-id', odId);
+
+          // Restaurer le vote si existant
+          if (party.votes && party.votes[odId] !== undefined) {
+            socket.emit('vote-confirmed', party.votes[odId]);
+          }
+
+          await broadcastToParty(party);
+          console.log('Émetteur reconnecté via reconnect-party:', odId, 'partie:', code);
+          return;
+        }
+
+        // L'odId n'est pas dans cette partie
+        socket.emit('reconnect-failed');
+      });
+    } catch (err) {
+      console.error('Erreur reconnect-party:', err);
+      socket.emit('reconnect-failed');
+    }
+  });
+
+  // Fermer les portes (Récepteur uniquement)
+  socket.on('close-doors', async () => {
+    try {
+      const odId = socketToOd.get(socket.id);
+      if (!odId) { socket.emit('error', 'Action non autorisée'); return; }
+
+      const code = await getUserParty(odId);
+      await withPartyLock(code, async () => {
+        const party = await getParty(code);
+        if (!party || odId !== party.recepteurOdId) {
+          socket.emit('error', 'Action non autorisée');
+          return;
+        }
+
+        party.etat = 'FERMEE';
+        await saveParty(party);
+        await broadcastToParty(party);
+        console.log('Portes fermées, partie:', code);
+      });
     } catch (err) {
       console.error('Erreur close-doors:', err);
       socket.emit('error', 'Erreur serveur');
@@ -310,28 +460,32 @@ io.on('connection', (socket) => {
   // Ouvrir le vote (Récepteur uniquement)
   socket.on('open-vote', async (timerSeconds) => {
     try {
-      const code = await getUserParty(socket.id);
-      const party = await getParty(code);
+      const odId = socketToOd.get(socket.id);
+      if (!odId) { socket.emit('error', 'Action non autorisée'); return; }
 
-      if (!party || socket.id !== party.recepteurId) {
-        socket.emit('error', 'Action non autorisée');
-        return;
-      }
+      const code = await getUserParty(odId);
+      await withPartyLock(code, async () => {
+        const party = await getParty(code);
+        if (!party || odId !== party.recepteurOdId) {
+          socket.emit('error', 'Action non autorisée');
+          return;
+        }
 
-      party.votes = {};
-      party.moyenne = null;
-      party.etat = 'VOTE_OUVERT';
+        party.votes = {};
+        party.moyenne = null;
+        party.etat = 'VOTE_OUVERT';
 
-      // Démarrer le timer si spécifié
-      if (timerSeconds && timerSeconds > 0) {
-        startTimer(party, timerSeconds);
-      } else {
-        party.timerEndTime = null;
-      }
+        // Démarrer le timer si spécifié
+        if (timerSeconds && timerSeconds > 0) {
+          startTimer(party, timerSeconds);
+        } else {
+          party.timerEndTime = null;
+        }
 
-      await saveParty(party);
-      await broadcastToParty(party);
-      console.log('Vote ouvert, partie:', code, 'timer:', timerSeconds || 'aucun');
+        await saveParty(party);
+        await broadcastToParty(party);
+        console.log('Vote ouvert, partie:', code, 'timer:', timerSeconds || 'aucun');
+      });
     } catch (err) {
       console.error('Erreur open-vote:', err);
       socket.emit('error', 'Erreur serveur');
@@ -341,56 +495,66 @@ io.on('connection', (socket) => {
   // Fermer le vote (Récepteur uniquement)
   socket.on('close-vote', async () => {
     try {
-      const code = await getUserParty(socket.id);
-      const party = await getParty(code);
+      const odId = socketToOd.get(socket.id);
+      if (!odId) { socket.emit('error', 'Action non autorisée'); return; }
 
-      if (!party || socket.id !== party.recepteurId) {
-        socket.emit('error', 'Action non autorisée');
-        return;
-      }
+      const code = await getUserParty(odId);
+      await withPartyLock(code, async () => {
+        const party = await getParty(code);
+        if (!party || odId !== party.recepteurOdId) {
+          socket.emit('error', 'Action non autorisée');
+          return;
+        }
 
-      await closeVote(party);
+        await closeVote(party);
+      });
     } catch (err) {
       console.error('Erreur close-vote:', err);
       socket.emit('error', 'Erreur serveur');
     }
   });
 
-  // Voter (Émetteur uniquement)
+  // Voter (Émetteur uniquement) — protégé par le mutex de la partie
   socket.on('vote', async (valeur) => {
     try {
-      const code = await getUserParty(socket.id);
-      const party = await getParty(code);
+      const odId = socketToOd.get(socket.id);
+      if (!odId) { socket.emit('error', 'Aucune partie en cours'); return; }
 
-      if (!party) {
-        socket.emit('error', 'Aucune partie en cours');
-        return;
-      }
+      const code = await getUserParty(odId);
 
-      if (party.etat !== 'VOTE_OUVERT') {
-        socket.emit('error', 'Le vote n\'est pas ouvert');
-        return;
-      }
+      await withPartyLock(code, async () => {
+        const party = await getParty(code);
 
-      if (!party.emetteurs || !party.emetteurs[socket.id]) {
-        socket.emit('error', 'Vous n\'êtes pas un émetteur');
-        return;
-      }
+        if (!party) {
+          socket.emit('error', 'Aucune partie en cours');
+          return;
+        }
 
-      const v = parseInt(valeur, 10);
-      if (isNaN(v) || v < 0 || v > 6) {
-        socket.emit('error', 'Valeur invalide (0-6)');
-        return;
-      }
+        if (party.etat !== 'VOTE_OUVERT') {
+          socket.emit('error', 'Le vote n\'est pas ouvert');
+          return;
+        }
 
-      party.votes = party.votes || {};
-      party.votes[socket.id] = v;
+        if (!party.emetteurs || !party.emetteurs[odId]) {
+          socket.emit('error', 'Vous n\'êtes pas un émetteur');
+          return;
+        }
 
-      await saveParty(party);
+        const v = parseInt(valeur, 10);
+        if (isNaN(v) || v < 0 || v > 6) {
+          socket.emit('error', 'Valeur invalide (0-6)');
+          return;
+        }
 
-      socket.emit('vote-confirmed', v);
-      await broadcastToParty(party);
-      console.log('Vote reçu de', socket.id, ':', v);
+        party.votes = party.votes || {};
+        party.votes[odId] = v;
+
+        await saveParty(party);
+
+        socket.emit('vote-confirmed', v);
+        await broadcastToParty(party);
+        console.log('Vote reçu de', odId, ':', v);
+      });
     } catch (err) {
       console.error('Erreur vote:', err);
       socket.emit('error', 'Erreur serveur');
@@ -400,26 +564,36 @@ io.on('connection', (socket) => {
   // Terminer la partie (Récepteur uniquement)
   socket.on('end-party', async () => {
     try {
-      const code = await getUserParty(socket.id);
+      const odId = socketToOd.get(socket.id);
+      if (!odId) { socket.emit('error', 'Action non autorisée'); return; }
+
+      const code = await getUserParty(odId);
       const party = await getParty(code);
 
-      if (!party || socket.id !== party.recepteurId) {
+      if (!party || odId !== party.recepteurOdId) {
         socket.emit('error', 'Action non autorisée');
         return;
       }
 
-      // Notifier tout le monde
-      io.to(party.recepteurId).emit('party-ended');
-      for (const odId of Object.keys(party.emetteurs || {})) {
-        io.to(odId).emit('party-ended');
-        await deleteUserParty(odId);
+      // Notifier tout le monde via la room
+      io.to('party:' + code).emit('party-ended');
+
+      // Nettoyer les associations user
+      for (const emOdId of Object.keys(party.emetteurs || {})) {
+        await deleteUserParty(emOdId);
+        const emSocketId = odToSocket.get(emOdId);
+        if (emSocketId) {
+          socketToOd.delete(emSocketId);
+          odToSocket.delete(emOdId);
+        }
       }
 
-      await deleteUserParty(socket.id);
+      await deleteUserParty(odId);
       await deleteParty(code);
 
-      io.to(socket.id).emit('party-state', null);
-      io.to(socket.id).emit('role', null);
+      // Nettoyer les maps du récepteur
+      socketToOd.delete(socket.id);
+      odToSocket.delete(odId);
 
       console.log('Partie terminée:', code);
     } catch (err) {
@@ -428,43 +602,35 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Déconnexion
+  // Déconnexion — ne retire plus les participants, les marque juste comme déconnectés
   socket.on('disconnect', async () => {
     console.log('Utilisateur déconnecté:', socket.id);
 
     try {
-      const code = await getUserParty(socket.id);
+      const odId = unregisterSocket(socket);
+      if (!odId) return;
+
+      const code = await getUserParty(odId);
       if (!code) return;
 
       const party = await getParty(code);
       if (!party) {
-        await deleteUserParty(socket.id);
+        await deleteUserParty(odId);
         return;
       }
 
-      // Si le récepteur se déconnecte, terminer la partie
-      if (socket.id === party.recepteurId) {
-        for (const odId of Object.keys(party.emetteurs || {})) {
-          io.to(odId).emit('party-ended');
-          await deleteUserParty(odId);
-        }
-
-        await deleteParty(code);
-        await deleteUserParty(socket.id);
-        console.log('Récepteur déconnecté, partie terminée:', code);
+      // Si le récepteur se déconnecte, la partie est préservée (il peut se reconnecter)
+      if (odId === party.recepteurOdId) {
+        console.log('Récepteur déconnecté (partie préservée):', odId, 'partie:', code);
         return;
       }
 
-      // Si un émetteur se déconnecte, le retirer
-      if (party.emetteurs && party.emetteurs[socket.id]) {
-        delete party.emetteurs[socket.id];
-        if (party.votes) {
-          delete party.votes[socket.id];
-        }
+      // Si un émetteur se déconnecte, le marquer comme déconnecté (ne pas supprimer)
+      if (party.emetteurs && party.emetteurs[odId]) {
+        party.emetteurs[odId].connecte = false;
         await saveParty(party);
-        await deleteUserParty(socket.id);
         await broadcastToParty(party);
-        console.log('Émetteur retiré:', socket.id, 'partie:', code);
+        console.log('Émetteur déconnecté (préservé):', odId, 'partie:', code);
       }
     } catch (err) {
       console.error('Erreur disconnect:', err);

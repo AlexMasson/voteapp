@@ -1,9 +1,40 @@
-const socket = io();
+const socket = io({
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+  transports: ['websocket', 'polling'],
+});
 
 // Keep-alive : ping le serveur toutes les 5 minutes pour éviter que Render s'endorme
 setInterval(() => {
   fetch('/ping').catch(() => {});
 }, 5 * 60 * 1000);
+
+// --- Identité persistante via localStorage ---
+function getOdId() {
+  let odId = localStorage.getItem('vote-app-od-id');
+  if (!odId) {
+    odId = crypto.randomUUID();
+    localStorage.setItem('vote-app-od-id', odId);
+  }
+  return odId;
+}
+
+function getSessionInfo() {
+  try {
+    const raw = localStorage.getItem('vote-app-session');
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function saveSessionInfo(role, code) {
+  localStorage.setItem('vote-app-session', JSON.stringify({ role, code, odId: getOdId() }));
+}
+
+function clearSessionInfo() {
+  localStorage.removeItem('vote-app-session');
+}
 
 // Éléments DOM
 const screens = {
@@ -60,6 +91,9 @@ const toast = document.getElementById('toast');
 let currentRole = null;
 let selectedVote = null;
 let currentPartyCode = null;
+let currentTourNumero = -1; // pour détecter les nouveaux tours
+let timerInterval = null;   // pour le décompte local du timer
+let isReconnecting = false; // flag pendant la tentative de reconnexion
 
 // Fonctions utilitaires
 function showScreen(screenName) {
@@ -83,7 +117,10 @@ function renderParticipants(emetteurs, etat) {
 
   emetteurs.forEach(e => {
     const div = document.createElement('div');
-    div.className = 'participant' + (e.aVote ? ' voted' : '');
+    const classes = ['participant'];
+    if (e.aVote) classes.push('voted');
+    if (!e.connecte) classes.push('disconnected');
+    div.className = classes.join(' ');
     div.innerHTML = `
       <span class="status"></span>
       <span>${e.nom}</span>
@@ -141,18 +178,8 @@ socket.on('party-state', (state) => {
     // Liste des participants
     renderParticipants(state.emetteurs, state.etat);
 
-    // Timer
-    if (state.timer !== null && state.timer > 0) {
-      timerDisplay.classList.remove('hidden');
-      timerValue.textContent = state.timer;
-      if (state.timer <= 5) {
-        timerDisplay.classList.add('warning');
-      } else {
-        timerDisplay.classList.remove('warning');
-      }
-    } else {
-      timerDisplay.classList.add('hidden');
-    }
+    // Timer côté client (décompte local basé sur timerEndTime)
+    updateTimerDisplay(state, timerDisplay, timerValue);
 
     // Historique
     if (state.historique && state.historique.length > 0) {
@@ -200,16 +227,11 @@ socket.on('party-state', (state) => {
   if (currentRole === 'emetteur') {
     emetteurCode.textContent = state.code || currentPartyCode;
 
-    // Timer émetteur
-    if (state.timer !== null && state.timer > 0 && state.etat === 'VOTE_OUVERT') {
-      timerEmetteur.classList.remove('hidden');
-      timerEmetteurValue.textContent = state.timer;
-      if (state.timer <= 5) {
-        timerEmetteur.classList.add('warning');
-      } else {
-        timerEmetteur.classList.remove('warning');
-      }
+    // Timer émetteur (décompte local)
+    if (state.etat === 'VOTE_OUVERT') {
+      updateTimerDisplay(state, timerEmetteur, timerEmetteurValue);
     } else {
+      stopLocalTimer();
       timerEmetteur.classList.add('hidden');
     }
 
@@ -232,10 +254,13 @@ socket.on('party-state', (state) => {
         emetteurWaiting.classList.add('hidden');
         emetteurVote.classList.remove('hidden');
         emetteurResultat.classList.add('hidden');
-        // Reset vote selection for new vote
-        selectedVote = null;
-        voteButtons.forEach(btn => btn.classList.remove('selected'));
-        voteStatus.textContent = '';
+        // Ne réinitialiser la sélection que si c'est un NOUVEAU tour
+        if (state.tourNumero !== currentTourNumero) {
+          currentTourNumero = state.tourNumero;
+          selectedVote = null;
+          voteButtons.forEach(btn => btn.classList.remove('selected', 'confirmed'));
+          voteStatus.textContent = '';
+        }
         break;
       case 'VOTE_FERME':
         emetteurWaiting.classList.add('hidden');
@@ -252,16 +277,39 @@ socket.on('party-state', (state) => {
 // Réception du rôle
 socket.on('role', (role) => {
   currentRole = role;
+  isReconnecting = false;
   if (role === 'recepteur') {
     showScreen('recepteur');
+    saveSessionInfo('recepteur', currentPartyCode);
   } else if (role === 'emetteur') {
     showScreen('emetteur');
+    saveSessionInfo('emetteur', currentPartyCode);
   }
 });
 
-// Confirmation de vote
+// Réception de l'odId assigné par le serveur
+socket.on('assigned-od-id', (odId) => {
+  localStorage.setItem('vote-app-od-id', odId);
+});
+
+// Confirmation de vote — feedback visuel persistant
 socket.on('vote-confirmed', (valeur) => {
-  voteStatus.textContent = `Vote enregistré : ${valeur}`;
+  selectedVote = valeur;
+  voteButtons.forEach(btn => {
+    btn.classList.remove('selected', 'confirmed');
+    if (parseInt(btn.dataset.value, 10) === valeur) {
+      btn.classList.add('selected', 'confirmed');
+    }
+  });
+  voteStatus.textContent = `✓ Vote enregistré : ${valeur}`;
+});
+
+// Échec de reconnexion
+socket.on('reconnect-failed', () => {
+  isReconnecting = false;
+  clearSessionInfo();
+  showScreen('home');
+  showToast('Session expirée, veuillez rejoindre à nouveau');
 });
 
 // Partie terminée
@@ -270,6 +318,9 @@ socket.on('party-ended', () => {
     showScreen('ended');
     currentRole = null;
     currentPartyCode = null;
+    currentTourNumero = -1;
+    clearSessionInfo();
+    stopLocalTimer();
   }
 });
 
@@ -278,11 +329,25 @@ socket.on('error', (message) => {
   showToast(message);
 });
 
+// --- Gestion de la reconnexion Socket.IO ---
+socket.on('disconnect', () => {
+  showToast('Connexion perdue... reconnexion en cours');
+});
+
+socket.on('connect', () => {
+  // Si on était dans une partie, tenter la reconnexion automatique
+  const session = getSessionInfo();
+  if (session && session.odId && session.code) {
+    isReconnecting = true;
+    socket.emit('reconnect-party', { odId: session.odId, code: session.code });
+  }
+});
+
 // Événements UI
 
 // Accueil - Démarrer
 btnStart.addEventListener('click', () => {
-  socket.emit('start-party');
+  socket.emit('start-party', getOdId());
 });
 
 // Accueil - Rejoindre
@@ -295,7 +360,7 @@ btnJoin.addEventListener('click', () => {
     return;
   }
 
-  socket.emit('join-party', { code, nom });
+  socket.emit('join-party', { code, nom, odId: getOdId() });
 });
 
 // Permettre de rejoindre avec Enter
@@ -342,6 +407,9 @@ btnEndParty.addEventListener('click', () => {
     showScreen('home');
     currentRole = null;
     currentPartyCode = null;
+    currentTourNumero = -1;
+    clearSessionInfo();
+    stopLocalTimer();
   }
 });
 
@@ -351,8 +419,8 @@ voteButtons.forEach(btn => {
     const valeur = parseInt(btn.dataset.value, 10);
     selectedVote = valeur;
 
-    // Mise à jour visuelle
-    voteButtons.forEach(b => b.classList.remove('selected'));
+    // Mise à jour visuelle optimiste
+    voteButtons.forEach(b => b.classList.remove('selected', 'confirmed'));
     btn.classList.add('selected');
 
     // Envoyer le vote
@@ -365,4 +433,43 @@ btnBackHome.addEventListener('click', () => {
   showScreen('home');
   inputCode.value = '';
   inputNom.value = '';
+  currentTourNumero = -1;
+  clearSessionInfo();
+  stopLocalTimer();
 });
+
+// --- Timer côté client ---
+function stopLocalTimer() {
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+}
+
+function updateTimerDisplay(state, timerEl, timerValueEl) {
+  stopLocalTimer();
+
+  if (!state.timerEndTime || state.etat !== 'VOTE_OUVERT') {
+    timerEl.classList.add('hidden');
+    return;
+  }
+
+  function tick() {
+    const remaining = Math.max(0, Math.round((state.timerEndTime - Date.now()) / 1000));
+    if (remaining <= 0) {
+      timerEl.classList.add('hidden');
+      stopLocalTimer();
+      return;
+    }
+    timerEl.classList.remove('hidden');
+    timerValueEl.textContent = remaining;
+    if (remaining <= 5) {
+      timerEl.classList.add('warning');
+    } else {
+      timerEl.classList.remove('warning');
+    }
+  }
+
+  tick();
+  timerInterval = setInterval(tick, 1000);
+}

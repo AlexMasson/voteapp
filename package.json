@@ -1,17 +1,25 @@
 {
   "name": "vote-app",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Application de vote collaboratif en temps réel",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node tests/smoke-test.js",
+    "test:load": "npx artillery run tests/load-test.yml",
+    "test:load:render": "npx artillery run tests/load-test.yml"
   },
   "dependencies": {
     "@upstash/redis": "^1.36.1",
     "dotenv": "^17.2.3",
     "express": "^4.18.2",
     "socket.io": "^4.7.2"
+  },
+  "devDependencies": {
+    "artillery": "^2.0.0",
+    "artillery-engine-socketio-v3": "^1.2.0",
+    "socket.io-client": "^4.7.2"
   },
   "engines": {
     "node": ">=18.0.0"
