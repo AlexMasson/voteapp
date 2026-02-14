@@ -11,29 +11,9 @@ setInterval(() => {
   fetch('/ping').catch(() => {});
 }, 5 * 60 * 1000);
 
-// --- Identité persistante via localStorage ---
+// --- Identité ---
 function getOdId() {
-  let odId = localStorage.getItem('vote-app-od-id');
-  if (!odId) {
-    odId = crypto.randomUUID();
-    localStorage.setItem('vote-app-od-id', odId);
-  }
-  return odId;
-}
-
-function getSessionInfo() {
-  try {
-    const raw = localStorage.getItem('vote-app-session');
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
-}
-
-function saveSessionInfo(role, code) {
-  localStorage.setItem('vote-app-session', JSON.stringify({ role, code, odId: getOdId() }));
-}
-
-function clearSessionInfo() {
-  localStorage.removeItem('vote-app-session');
+  return crypto.randomUUID();
 }
 
 // Éléments DOM
@@ -91,9 +71,9 @@ const toast = document.getElementById('toast');
 let currentRole = null;
 let selectedVote = null;
 let currentPartyCode = null;
-let currentTourNumero = -1; // pour détecter les nouveaux tours
-let timerInterval = null;   // pour le décompte local du timer
-let isReconnecting = false; // flag pendant la tentative de reconnexion
+let currentNom = null;         // pseudo de l'émetteur (pour reconnexion par nom)
+let currentTourNumero = -1;    // pour détecter les nouveaux tours
+let timerInterval = null;      // pour le décompte local du timer
 
 // Fonctions utilitaires
 function showScreen(screenName) {
@@ -277,19 +257,16 @@ socket.on('party-state', (state) => {
 // Réception du rôle
 socket.on('role', (role) => {
   currentRole = role;
-  isReconnecting = false;
   if (role === 'recepteur') {
     showScreen('recepteur');
-    saveSessionInfo('recepteur', currentPartyCode);
   } else if (role === 'emetteur') {
     showScreen('emetteur');
-    saveSessionInfo('emetteur', currentPartyCode);
   }
 });
 
 // Réception de l'odId assigné par le serveur
-socket.on('assigned-od-id', (odId) => {
-  localStorage.setItem('vote-app-od-id', odId);
+socket.on('assigned-od-id', () => {
+  // Plus besoin de stocker l'odId — la reconnexion se fait par pseudo
 });
 
 // Confirmation de vote — feedback visuel persistant
@@ -306,8 +283,6 @@ socket.on('vote-confirmed', (valeur) => {
 
 // Échec de reconnexion
 socket.on('reconnect-failed', () => {
-  isReconnecting = false;
-  clearSessionInfo();
   showScreen('home');
   showToast('Session expirée, veuillez rejoindre à nouveau');
 });
@@ -318,8 +293,8 @@ socket.on('party-ended', () => {
     showScreen('ended');
     currentRole = null;
     currentPartyCode = null;
+    currentNom = null;
     currentTourNumero = -1;
-    clearSessionInfo();
     stopLocalTimer();
   }
 });
@@ -330,16 +305,24 @@ socket.on('error', (message) => {
 });
 
 // --- Gestion de la reconnexion Socket.IO ---
+// En cas de coupure réseau (même onglet), re-join automatiquement par pseudo
+
 socket.on('disconnect', () => {
-  showToast('Connexion perdue... reconnexion en cours');
+  if (currentRole) {
+    showToast('Connexion perdue... reconnexion en cours');
+  }
 });
 
 socket.on('connect', () => {
-  // Si on était dans une partie, tenter la reconnexion automatique
-  const session = getSessionInfo();
-  if (session && session.odId && session.code) {
-    isReconnecting = true;
-    socket.emit('reconnect-party', { odId: session.odId, code: session.code });
+  // Si on était dans une partie, re-join automatiquement
+  if (currentRole === 'emetteur' && currentPartyCode && currentNom) {
+    socket.emit('join-party', { code: currentPartyCode, nom: currentNom, odId: getOdId() });
+  } else if (currentRole === 'recepteur' && currentPartyCode) {
+    // Le récepteur utilise reconnect-party (pas de pseudo)
+    const odId = localStorage.getItem('vote-app-od-id');
+    if (odId) {
+      socket.emit('reconnect-party', { odId, code: currentPartyCode });
+    }
   }
 });
 
@@ -347,7 +330,10 @@ socket.on('connect', () => {
 
 // Accueil - Démarrer
 btnStart.addEventListener('click', () => {
-  socket.emit('start-party', getOdId());
+  const odId = getOdId();
+  // Le récepteur stocke son odId pour la reconnexion réseau
+  localStorage.setItem('vote-app-od-id', odId);
+  socket.emit('start-party', odId);
 });
 
 // Accueil - Rejoindre
@@ -361,6 +347,7 @@ btnJoin.addEventListener('click', () => {
   }
 
   socket.emit('join-party', { code, nom, odId: getOdId() });
+  currentNom = nom; // Garder le pseudo pour la reconnexion réseau
 });
 
 // Permettre de rejoindre avec Enter
@@ -407,8 +394,8 @@ btnEndParty.addEventListener('click', () => {
     showScreen('home');
     currentRole = null;
     currentPartyCode = null;
+    currentNom = null;
     currentTourNumero = -1;
-    clearSessionInfo();
     stopLocalTimer();
   }
 });
@@ -433,8 +420,9 @@ btnBackHome.addEventListener('click', () => {
   showScreen('home');
   inputCode.value = '';
   inputNom.value = '';
+  currentRole = null;
+  currentNom = null;
   currentTourNumero = -1;
-  clearSessionInfo();
   stopLocalTimer();
 });
 

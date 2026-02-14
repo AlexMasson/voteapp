@@ -328,23 +328,30 @@ io.on('connection', (socket) => {
           return;
         }
 
-        // Vérifier si c'est une reconnexion d'un émetteur existant
-        if (party.emetteurs && party.emetteurs[odId]) {
-          party.emetteurs[odId].connecte = true;
+        // Nettoyer le nom
+        const nomClean = (nom || 'Anonyme').trim().substring(0, 20) || 'Anonyme';
+
+        // Vérifier si c'est une reconnexion par pseudo (même nom dans la partie)
+        const existingEntry = Object.entries(party.emetteurs || {})
+          .find(([_, data]) => data.nom.toLowerCase() === nomClean.toLowerCase());
+
+        if (existingEntry) {
+          const [existingOdId] = existingEntry;
+          party.emetteurs[existingOdId].connecte = true;
           await saveParty(party);
-          await setUserParty(odId, code);
-          registerSocket(socket, odId, code);
+          await setUserParty(existingOdId, code);
+          registerSocket(socket, existingOdId, code);
 
           socket.emit('role', 'emetteur');
-          socket.emit('assigned-od-id', odId);
+          socket.emit('assigned-od-id', existingOdId);
 
           // Restaurer le vote si existant
-          if (party.votes && party.votes[odId] !== undefined) {
-            socket.emit('vote-confirmed', party.votes[odId]);
+          if (party.votes && party.votes[existingOdId] !== undefined) {
+            socket.emit('vote-confirmed', party.votes[existingOdId]);
           }
 
           await broadcastToParty(party);
-          console.log('Émetteur reconnecté:', odId, 'partie:', code);
+          console.log('Émetteur reconnecté par pseudo:', nomClean, 'partie:', code);
           return;
         }
 
@@ -353,9 +360,6 @@ io.on('connection', (socket) => {
           socket.emit('error', 'Nombre maximum de participants atteint');
           return;
         }
-
-        // Nettoyer le nom
-        const nomClean = (nom || 'Anonyme').trim().substring(0, 20) || 'Anonyme';
 
         party.emetteurs = party.emetteurs || {};
         party.emetteurs[odId] = { id: odId, nom: nomClean, connecte: true };

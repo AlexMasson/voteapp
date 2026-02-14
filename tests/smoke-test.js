@@ -143,24 +143,23 @@ async function runTest() {
     await sleep(200);
   }
 
-  // --- 5. Test de reconnexion ---
-  console.log('\n5️⃣  Test de reconnexion...');
+  // --- 5. Test de reconnexion par pseudo ---
+  console.log('\n5️⃣  Test de reconnexion par pseudo...');
   const testEmetteur = emetteurs[0];
   testEmetteur.socket.disconnect();
   await sleep(2000); // Plus de temps sur Render pour traiter la déconnexion
 
-  // Reconnecter avec diagnostic
+  // Reconnecter avec le même pseudo via join-party
   const reconnSocket = createSocket();
-  reconnSocket.on('reconnect-failed', () => console.log('   ⚠️  reconnect-failed reçu'));
   reconnSocket.on('error', (msg) => console.log('   ⚠️  error reçu:', msg));
   await waitFor(reconnSocket, 'connect');
-  console.log(`   🔌 Socket reconnecté, envoi reconnect-party (odId=${testEmetteur.odId}, code=${partyCode})`);
-  reconnSocket.emit('reconnect-party', { odId: testEmetteur.odId, code: partyCode });
+  console.log(`   🔌 Socket reconnecté, envoi join-party (nom=${testEmetteur.nom}, code=${partyCode})`);
+  reconnSocket.emit('join-party', { code: partyCode, nom: testEmetteur.nom, odId: `reco-${Date.now()}` });
   
   try {
     const role = await waitFor(reconnSocket, 'role', 60000);
     if (role === 'emetteur') {
-      console.log('   ✅ Reconnexion réussie');
+      console.log('   ✅ Reconnexion par pseudo réussie');
       testEmetteur.socket = reconnSocket;
     } else {
       errors.push('Reconnexion échouée: rôle reçu = ' + role);
