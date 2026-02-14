@@ -626,11 +626,17 @@ io.on('connection', (socket) => {
       }
 
       // Si un émetteur se déconnecte, le marquer comme déconnecté (ne pas supprimer)
+      // Protégé par le mutex pour éviter d'écraser des votes concurrents
       if (party.emetteurs && party.emetteurs[odId]) {
-        party.emetteurs[odId].connecte = false;
-        await saveParty(party);
-        await broadcastToParty(party);
-        console.log('Émetteur déconnecté (préservé):', odId, 'partie:', code);
+        await withPartyLock(code, async () => {
+          const freshParty = await getParty(code);
+          if (freshParty && freshParty.emetteurs && freshParty.emetteurs[odId]) {
+            freshParty.emetteurs[odId].connecte = false;
+            await saveParty(freshParty);
+            await broadcastToParty(freshParty);
+            console.log('Émetteur déconnecté (préservé):', odId, 'partie:', code);
+          }
+        });
       }
     } catch (err) {
       console.error('Erreur disconnect:', err);

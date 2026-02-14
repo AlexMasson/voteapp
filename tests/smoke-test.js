@@ -128,7 +128,8 @@ async function runTest() {
     });
 
     await Promise.all(votePromises);
-    console.log(`   ✅ ${NB_EMETTEURS} votes reçus et confirmés`);
+    const votesThisTour = totalVotesReceived - (totalVotesExpected - NB_EMETTEURS);
+    console.log(`   ✅ ${votesThisTour}/${NB_EMETTEURS} votes confirmés`);
 
     // Fermer le vote — attendre un state avec etat=VOTE_FERME
     recepteur.emit('close-vote');
@@ -146,20 +147,43 @@ async function runTest() {
   console.log('\n5️⃣  Test de reconnexion...');
   const testEmetteur = emetteurs[0];
   testEmetteur.socket.disconnect();
-  await sleep(500);
+  await sleep(2000); // Plus de temps sur Render pour traiter la déconnexion
 
-  // Reconnecter
+  // Reconnecter avec diagnostic
   const reconnSocket = createSocket();
+  reconnSocket.on('reconnect-failed', () => console.log('   ⚠️  reconnect-failed reçu'));
+  reconnSocket.on('error', (msg) => console.log('   ⚠️  error reçu:', msg));
   await waitFor(reconnSocket, 'connect');
+  console.log(`   🔌 Socket reconnecté, envoi reconnect-party (odId=${testEmetteur.odId}, code=${partyCode})`);
   reconnSocket.emit('reconnect-party', { odId: testEmetteur.odId, code: partyCode });
-  const role = await waitFor(reconnSocket, 'role');
-
-  if (role === 'emetteur') {
-    console.log('   ✅ Reconnexion réussie');
-    testEmetteur.socket = reconnSocket;
-  } else {
-    errors.push('Reconnexion échouée: rôle reçu = ' + role);
-    console.log('   ❌ Reconnexion échouée');
+  
+  try {
+    const role = await waitFor(reconnSocket, 'role', 60000);
+    if (role === 'emetteur') {
+      console.log('   ✅ Reconnexion réussie');
+      testEmetteur.socket = reconnSocket;
+    } else {
+      errors.push('Reconnexion échouée: rôle reçu = ' + role);
+      console.log('   ❌ Reconnexion échouée, rôle:', role);
+    }
+  } catch (e) {
+    errors.push('Reconnexion échouée: timeout role après 60s');
+    console.log('   ❌ Timeout reconnexion — skip le tour post-reco');
+    reconnSocket.disconnect();
+    // Skip le tour post-reco
+    console.log('\n7️⃣  Fin de partie...');
+    recepteur.emit('end-party');
+    await sleep(500);
+    recepteur.disconnect();
+    emetteurs.forEach(em => em.socket.disconnect());
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log('\n' + '='.repeat(50));
+    console.log(`⏱️  Durée : ${elapsed}s`);
+    console.log(`📬 Votes envoyés : ${totalVotesExpected}`);
+    console.log(`📩 Votes confirmés : ${totalVotesReceived}`);
+    console.log(`\n❌ ${errors.length} ERREUR(S) :`);
+    errors.forEach(e => console.log(`   - ${e}`));
+    process.exit(1);
   }
 
   // --- 6. Tour de vote post-reconnexion ---
