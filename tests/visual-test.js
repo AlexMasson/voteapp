@@ -121,12 +121,51 @@ async function runVisualTest() {
     
     await sleep(SLOW * 2);
 
-    // Lire la moyenne affichée
+    // Lire la moyenne, min, max affichés
     try {
       const moyenne = await recepteur.textContent('#moyenne-recepteur');
-      console.log(`   📊 Moyenne : ${moyenne}`);
+      const min = await recepteur.textContent('#min-recepteur');
+      const max = await recepteur.textContent('#max-recepteur');
+      console.log(`   📊 Moyenne : ${moyenne} | Min : ${min} | Max : ${max}`);
+
+      // Vérifier que min/max sont des nombres valides
+      if (min === '-' || max === '-') {
+        console.log(`   ❌ ERREUR : Min/Max non mis à jour après le vote`);
+      } else {
+        console.log(`   ✅ Min/Max affichés correctement`);
+      }
     } catch {
-      console.log(`   📊 Moyenne non affichée`);
+      console.log(`   📊 Résultats non affichés`);
+    }
+
+    // Vérifier le cumul après suffisamment de tours
+    try {
+      const cumulVisible = await recepteur.evaluate(() => {
+        const el = document.getElementById('cumul-section');
+        return el && !el.classList.contains('hidden');
+      });
+      if (cumulVisible) {
+        const cumulVal = await recepteur.textContent('#cumul-value');
+        const cumulCount = await recepteur.textContent('#cumul-count');
+        console.log(`   📈 Cumul : ${cumulVal} ${cumulCount}`);
+      } else if (tour >= 1) {
+        console.log(`   ⚠️  Cumul non visible après ${tour} tour(s)`);
+      }
+    } catch {
+      // Pas critique
+    }
+
+    // Vérifier l'historique côté récepteur
+    try {
+      const histCount = await recepteur.evaluate(() => {
+        return document.querySelectorAll('.historique-item').length;
+      });
+      console.log(`   📜 Historique : ${histCount} entrée(s)`);
+      if (histCount !== tour) {
+        console.log(`   ⚠️  Attendu ${tour} entrée(s) dans l'historique`);
+      }
+    } catch {
+      // Pas critique
     }
   }
 
@@ -140,6 +179,26 @@ async function runVisualTest() {
   await aliceCtx.close();
   await sleep(SLOW * 2);
   console.log('   ❌ Alice a fermé son onglet (pastille rouge côté récepteur)');
+
+  // Vérifier qu'Alice apparaît comme déconnectée (pastille rouge)
+  try {
+    const aliceDisconnected = await recepteur.evaluate(() => {
+      const participants = document.querySelectorAll('.participant');
+      for (const p of participants) {
+        if (p.textContent.includes('Alice')) {
+          return p.classList.contains('disconnected');
+        }
+      }
+      return null;
+    });
+    if (aliceDisconnected === true) {
+      console.log('   ✅ Alice bien marquée déconnectée (pastille rouge)');
+    } else {
+      console.log(`   ⚠️  Statut déconnexion Alice inattendu: ${aliceDisconnected}`);
+    }
+  } catch {
+    // Pas critique
+  }
 
   // Alice rouvre un NOUVEAU navigateur (nouveau contexte = pas de localStorage)
   const newAliceCtx = await browser.newContext({
@@ -163,6 +222,23 @@ async function runVisualTest() {
     await aliceReconn.waitForSelector('#screen-emetteur.active', { timeout: 10000 });
     console.log('   ✅ Alice reconnectée par pseudo !');
     emetteurPages[0] = { page: aliceReconn, prenom: 'Alice', ctx: newAliceCtx };
+
+    // Vérifier que la pastille Alice est redevenue verte (pas disconnected)
+    await sleep(500);
+    const aliceReconnected = await recepteur.evaluate(() => {
+      const participants = document.querySelectorAll('.participant');
+      for (const p of participants) {
+        if (p.textContent.includes('Alice')) {
+          return !p.classList.contains('disconnected');
+        }
+      }
+      return null;
+    });
+    if (aliceReconnected === true) {
+      console.log('   ✅ Pastille Alice redevenue verte après reconnexion');
+    } else {
+      console.log('   ❌ ERREUR : Alice toujours marquée déconnectée après reconnexion !');
+    }
   } catch {
     console.log('   ⚠️  Reconnexion par pseudo non détectée');
     const activeScreen = await aliceReconn.evaluate(() => {
@@ -202,9 +278,69 @@ async function runVisualTest() {
 
   try {
     const moyenne = await recepteur.textContent('#moyenne-recepteur');
-    console.log(`   📊 Moyenne post-reco : ${moyenne}`);
+    const min = await recepteur.textContent('#min-recepteur');
+    const max = await recepteur.textContent('#max-recepteur');
+    console.log(`   📊 Moyenne post-reco : ${moyenne} | Min : ${min} | Max : ${max}`);
   } catch {
-    console.log('   📊 Moyenne non affichée');
+    console.log('   📊 Résultats non affichés');
+  }
+
+  // Vérifier le cumul après 4 tours
+  try {
+    const cumulVisible = await recepteur.evaluate(() => {
+      const el = document.getElementById('cumul-section');
+      return el && !el.classList.contains('hidden');
+    });
+    if (cumulVisible) {
+      const cumulVal = await recepteur.textContent('#cumul-value');
+      const cumulCount = await recepteur.textContent('#cumul-count');
+      console.log(`   📈 Cumul final : ${cumulVal} ${cumulCount}`);
+    } else {
+      console.log('   ⚠️  Cumul non visible après le tour post-reco');
+    }
+  } catch {
+    // Pas critique
+  }
+
+  // Vérifier l'historique (devrait avoir NB_TOURS + 1 entrées, max 8)
+  try {
+    const histCount = await recepteur.evaluate(() => {
+      return document.querySelectorAll('.historique-item').length;
+    });
+    const expectedHist = Math.min(NB_TOURS + 1, 8);
+    console.log(`   📜 Historique : ${histCount} entrée(s) (attendu ${expectedHist}, max 8)`);
+    if (histCount > 8) {
+      console.log('   ❌ ERREUR : Historique dépasse 8 entrées !');
+    }
+
+    // Vérifier que chaque entrée a bien min-max
+    const hasMinMax = await recepteur.evaluate(() => {
+      const items = document.querySelectorAll('.historique-item .minmax');
+      return items.length;
+    });
+    console.log(`   📜 Entrées avec min-max : ${hasMinMax}/${histCount}`);
+  } catch {
+    // Pas critique
+  }
+
+  // Vérifier les résultats côté émetteur aussi
+  try {
+    const emPage = emetteurPages[1].page; // Bob
+    const emMoyenne = await emPage.textContent('#moyenne-emetteur');
+    const emMin = await emPage.textContent('#min-emetteur');
+    const emMax = await emPage.textContent('#max-emetteur');
+    console.log(`   📊 Vue émetteur (Bob) : Moyenne ${emMoyenne} | Min ${emMin} | Max ${emMax}`);
+    
+    const emCumulVisible = await emPage.evaluate(() => {
+      const el = document.getElementById('cumul-emetteur-section');
+      return el && !el.classList.contains('hidden');
+    });
+    if (emCumulVisible) {
+      const emCumulVal = await emPage.textContent('#cumul-emetteur-value');
+      console.log(`   📈 Cumul émetteur : ${emCumulVal}`);
+    }
+  } catch {
+    console.log('   ⚠️  Résultats émetteur non vérifiables');
   }
 
   // --- 7. Fin ---
