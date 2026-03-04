@@ -61,6 +61,17 @@
       <div id="resultat-recepteur" class="resultat hidden">
         <span class="label">Moyenne</span>
         <span id="moyenne-recepteur" class="moyenne">-</span>
+        <div class="resultat-details">
+          <span class="resultat-min">Min : <strong id="min-recepteur">-</strong></span>
+          <span class="resultat-max">Max : <strong id="max-recepteur">-</strong></span>
+        </div>
+      </div>
+
+      <!-- Cumul des 4 derniers votes -->
+      <div id="cumul-section" class="cumul-section hidden">
+        <span class="cumul-label">Cumul 4 derniers votes</span>
+        <span id="cumul-value" class="cumul-value">-</span>
+        <span id="cumul-count" class="cumul-count"></span>
       </div>
 
       <!-- Historique -->
@@ -129,6 +140,17 @@
         <p>Vote terminé</p>
         <span class="label">Moyenne</span>
         <span id="moyenne-emetteur" class="moyenne">-</span>
+        <div class="resultat-details">
+          <span class="resultat-min">Min : <strong id="min-emetteur">-</strong></span>
+          <span class="resultat-max">Max : <strong id="max-emetteur">-</strong></span>
+        </div>
+      </div>
+
+      <!-- Cumul des 4 derniers votes (émetteur) -->
+      <div id="cumul-emetteur-section" class="cumul-section hidden">
+        <span class="cumul-label">Cumul 4 derniers votes</span>
+        <span id="cumul-emetteur-value" class="cumul-value">-</span>
+        <span id="cumul-emetteur-count" class="cumul-count"></span>
       </div>
 
       <!-- Historique émetteur -->

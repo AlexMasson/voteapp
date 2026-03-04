@@ -141,6 +141,13 @@ function getPartyState(party) {
     if (timer <= 0) timer = null;
   }
 
+  // Cumul des 4 dernières moyennes (note sur 20)
+  const hist = party.historique || [];
+  const last4 = hist.slice(-4);
+  const cumulLast4 = last4.length > 0
+    ? Math.round(last4.reduce((acc, h) => acc + h.moyenne, 0) * 10) / 10
+    : null;
+
   return {
     code: party.code,
     etat: party.etat,
@@ -148,10 +155,12 @@ function getPartyState(party) {
     moyenne: party.moyenne,
     emetteurs: emetteursList,
     nbVotes: Object.keys(party.votes || {}).length,
-    historique: party.historique || [],
+    historique: hist,
     timer: timer,
     timerEndTime: party.timerEndTime || null,
-    tourNumero: (party.historique || []).length,
+    tourNumero: hist.length,
+    cumulLast4: cumulLast4,
+    cumulLast4Count: last4.length,
   };
 }
 
@@ -220,13 +229,23 @@ async function closeVote(party) {
       }
     }
 
+    const voteMin = Math.min(...votes);
+    const voteMax = Math.max(...votes);
+
     party.historique = party.historique || [];
     party.historique.push({
       numero: party.historique.length + 1,
       moyenne: party.moyenne,
       nbVotants: votes.length,
+      voteMin: voteMin,
+      voteMax: voteMax,
       votes: votesDetail
     });
+
+    // Garder uniquement les 8 derniers tours
+    if (party.historique.length > 8) {
+      party.historique = party.historique.slice(-8);
+    }
   } else {
     party.moyenne = null;
   }
@@ -630,9 +649,20 @@ io.on('connection', (socket) => {
       }
 
       // Si un émetteur se déconnecte, le marquer comme déconnecté (ne pas supprimer)
+      // SAUF si un nouveau socket a déjà pris le relais (reconnexion rapide)
+      if (odToSocket.has(odId)) {
+        console.log('Ancien socket déconnecté mais nouveau déjà actif, skip:', odId);
+        return;
+      }
+
       // Protégé par le mutex pour éviter d'écraser des votes concurrents
       if (party.emetteurs && party.emetteurs[odId]) {
         await withPartyLock(code, async () => {
+          // Re-vérifier après le mutex (un reconnect a pu arriver entre-temps)
+          if (odToSocket.has(odId)) {
+            console.log('Reconnexion arrivée pendant le mutex, skip disconnect:', odId);
+            return;
+          }
           const freshParty = await getParty(code);
           if (freshParty && freshParty.emetteurs && freshParty.emetteurs[odId]) {
             freshParty.emetteurs[odId].connecte = false;

@@ -140,10 +140,34 @@ async function runTest() {
       errors.push(`Tour ${tour}: attendu ${NB_EMETTEURS} votes, reçu ${state.nbVotes}`);
     }
 
+    // Vérifier voteMin / voteMax dans l'historique
+    const lastHist = state.historique[state.historique.length - 1];
+    if (lastHist.voteMin === undefined || lastHist.voteMax === undefined) {
+      errors.push(`Tour ${tour}: voteMin/voteMax manquants dans l'historique`);
+    } else {
+      console.log(`   📈 Min: ${lastHist.voteMin}, Max: ${lastHist.voteMax}`);
+    }
+
+    // Vérifier cumulLast4
+    if (state.cumulLast4 === undefined || state.cumulLast4 === null) {
+      errors.push(`Tour ${tour}: cumulLast4 manquant dans le state`);
+    } else {
+      const expectedCount = Math.min(tour, 4);
+      if (state.cumulLast4Count !== expectedCount) {
+        errors.push(`Tour ${tour}: cumulLast4Count attendu ${expectedCount}, reçu ${state.cumulLast4Count}`);
+      }
+      console.log(`   🔢 Cumul 4 derniers: ${state.cumulLast4} (${state.cumulLast4Count}/4)`);
+    }
+
+    // Vérifier que l'historique ne dépasse jamais 8 entrées
+    if (state.historique.length > 8) {
+      errors.push(`Tour ${tour}: historique dépasse 8 entrées (${state.historique.length})`);
+    }
+
     await sleep(200);
   }
 
-  // --- 5. Test de reconnexion par pseudo ---
+  // --- 5. Test de reconnexion (vérifier que le statut connecté est correct) ---
   console.log('\n5️⃣  Test de reconnexion par pseudo...');
   const testEmetteur = emetteurs[0];
   testEmetteur.socket.disconnect();
@@ -222,6 +246,29 @@ async function runTest() {
 
   if (finalState?.nbVotes !== NB_EMETTEURS) {
     errors.push(`Post-reco: attendu ${NB_EMETTEURS} votes, reçu ${finalState?.nbVotes}`);
+  }
+
+  // Vérifier voteMin/voteMax du tour post-reco
+  const lastHistPR = finalState?.historique?.[finalState.historique.length - 1];
+  if (lastHistPR && lastHistPR.voteMin !== undefined) {
+    console.log(`   📈 Min: ${lastHistPR.voteMin}, Max: ${lastHistPR.voteMax}`);
+  } else {
+    errors.push('Post-reco: voteMin/voteMax manquants');
+  }
+
+  // Vérifier que l'émetteur reconnecté est bien marqué connecté (race condition fix)
+  const reconEmetteur = finalState?.emetteurs?.find(e => e.nom === testEmetteur.nom);
+  if (reconEmetteur && !reconEmetteur.connecte) {
+    errors.push('Race condition reconnexion: émetteur marqué déconnecté malgré reconnexion');
+    console.log('   ❌ Race condition: émetteur déconnecté malgré reconnexion');
+  } else if (reconEmetteur) {
+    console.log('   ✅ Statut connecté correct après reconnexion');
+  }
+
+  // Historique total = 5 tours + 1 post-reco = 6 (doit être ≤ 8)
+  console.log(`   📋 Historique: ${finalState?.historique?.length} entrées (max 8)`);
+  if (finalState?.historique?.length > 8) {
+    errors.push(`Post-reco: historique dépasse 8 (${finalState.historique.length})`);
   }
 
   // --- 7. Terminer ---

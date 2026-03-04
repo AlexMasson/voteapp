@@ -47,6 +47,11 @@ const useTimer = document.getElementById('use-timer');
 const timerDuration = document.getElementById('timer-duration');
 const historiqueSection = document.getElementById('historique-section');
 const historiqueList = document.getElementById('historique-list');
+const minRecepteur = document.getElementById('min-recepteur');
+const maxRecepteur = document.getElementById('max-recepteur');
+const cumulSection = document.getElementById('cumul-section');
+const cumulValue = document.getElementById('cumul-value');
+const cumulCount = document.getElementById('cumul-count');
 
 // Émetteur
 const emetteurCode = document.getElementById('emetteur-code');
@@ -60,6 +65,11 @@ const timerEmetteur = document.getElementById('timer-emetteur');
 const timerEmetteurValue = document.getElementById('timer-emetteur-value');
 const historiqueEmetteurSection = document.getElementById('historique-emetteur-section');
 const historiqueEmetteurList = document.getElementById('historique-emetteur-list');
+const minEmetteur = document.getElementById('min-emetteur');
+const maxEmetteur = document.getElementById('max-emetteur');
+const cumulEmetteurSection = document.getElementById('cumul-emetteur-section');
+const cumulEmetteurValue = document.getElementById('cumul-emetteur-value');
+const cumulEmetteurCount = document.getElementById('cumul-emetteur-count');
 
 // Ended
 const btnBackHome = document.getElementById('btn-back-home');
@@ -120,10 +130,14 @@ function renderHistorique(historique, targetList) {
   [...historique].reverse().forEach(h => {
     const div = document.createElement('div');
     div.className = 'historique-item';
+    const minMax = (h.voteMin !== undefined && h.voteMax !== undefined)
+      ? `<span class="details minmax">${h.voteMin} – ${h.voteMax}</span>`
+      : '';
     div.innerHTML = `
       <div>
         <span class="tour">Tour ${h.numero}</span>
         <span class="details">${h.nbVotants} votant${h.nbVotants > 1 ? 's' : ''}</span>
+        ${minMax}
       </div>
       <span class="moyenne-small">${h.moyenne}</span>
     `;
@@ -169,6 +183,17 @@ socket.on('party-state', (state) => {
       historiqueSection.classList.add('hidden');
     }
 
+    // Cumul des 4 derniers votes
+    if (state.cumulLast4 !== null && state.cumulLast4 !== undefined) {
+      cumulSection.classList.remove('hidden');
+      cumulValue.textContent = state.cumulLast4;
+      cumulCount.textContent = state.cumulLast4Count < 4
+        ? `(${state.cumulLast4Count}/4 votes)`
+        : '';
+    } else {
+      cumulSection.classList.add('hidden');
+    }
+
     // Gestion des boutons selon l'état
     switch (state.etat) {
       case 'OUVERTE':
@@ -198,6 +223,14 @@ socket.on('party-state', (state) => {
         if (state.moyenne !== null) {
           resultatRecepteur.classList.remove('hidden');
           moyenneRecepteur.textContent = state.moyenne;
+          // Min / Max du dernier tour
+          const lastTour = state.historique && state.historique.length > 0
+            ? state.historique[state.historique.length - 1]
+            : null;
+          if (lastTour && lastTour.voteMin !== undefined) {
+            minRecepteur.textContent = lastTour.voteMin;
+            maxRecepteur.textContent = lastTour.voteMax;
+          }
         }
         break;
     }
@@ -221,6 +254,17 @@ socket.on('party-state', (state) => {
       renderHistorique(state.historique, historiqueEmetteurList);
     } else {
       historiqueEmetteurSection.classList.add('hidden');
+    }
+
+    // Cumul des 4 derniers votes (émetteur)
+    if (state.cumulLast4 !== null && state.cumulLast4 !== undefined) {
+      cumulEmetteurSection.classList.remove('hidden');
+      cumulEmetteurValue.textContent = state.cumulLast4;
+      cumulEmetteurCount.textContent = state.cumulLast4Count < 4
+        ? `(${state.cumulLast4Count}/4 votes)`
+        : '';
+    } else {
+      cumulEmetteurSection.classList.add('hidden');
     }
 
     switch (state.etat) {
@@ -248,6 +292,14 @@ socket.on('party-state', (state) => {
         emetteurResultat.classList.remove('hidden');
         if (state.moyenne !== null) {
           moyenneEmetteur.textContent = state.moyenne;
+          // Min / Max du dernier tour
+          const lastTourE = state.historique && state.historique.length > 0
+            ? state.historique[state.historique.length - 1]
+            : null;
+          if (lastTourE && lastTourE.voteMin !== undefined) {
+            minEmetteur.textContent = lastTourE.voteMin;
+            maxEmetteur.textContent = lastTourE.voteMax;
+          }
         }
         break;
     }
