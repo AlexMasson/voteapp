@@ -24,9 +24,11 @@ const redis = new Redis({
 // Servir les fichiers statiques
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Route keep-alive pour éviter que Render s'endorme et Upstash supprime la DB
+// Route keep-alive pour éviter que Render s'endorme et Upstash archive la DB
+// Note : PING ne compte pas comme activité pour Upstash (commande non facturée),
+// donc on fait un SET réel pour maintenir la DB active
 app.get('/ping', async (req, res) => {
-  try { await redis.ping(); } catch (_) { /* ignore */ }
+  try { await redis.set('keepalive', Date.now(), { ex: 600 }); } catch (_) { /* ignore */ }
   res.status(200).send('pong');
 });
 
