@@ -1,0 +1,26 @@
+# Ping quotidien pour garder Render éveillé et la base Upstash active
+# (Upstash supprime les bases gratuites inactives ; le ping côté navigateur
+# ne suffit pas quand personne n'ouvre l'appli pendant des semaines).
+name: keepalive
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /ping (réveille Render + SET Redis)
+        run: curl -fsS --retry 5 --retry-delay 20 --max-time 90 https://voteapp-8dub.onrender.com/ping
+
+      # GitHub désactive les workflows planifiés après 60 jours sans commit :
+      # on se réactive soi-même à chaque exécution.
+      - name: Garder le workflow actif
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/keepalive.yml/enable"
